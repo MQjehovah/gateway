@@ -99,8 +99,8 @@ export async function keyRoutes(fastify: FastifyInstance) {
         keyHash,
         name: req.body.name,
         rateLimit: req.body.rateLimit || 60,
-        dailyQuota: req.body.dailyQuota ?? 100000,
-        monthlyQuota: req.body.monthlyQuota ?? 3000000,
+        dailyQuota: req.body.dailyQuota ?? 0,
+        monthlyQuota: req.body.monthlyQuota ?? 0,
         expiresAt: req.body.expiresAt ? new Date(req.body.expiresAt) : null,
         allowedModels: req.body.allowedModels?.length
           ? { create: req.body.allowedModels.map(m => ({ modelId: m.modelId, dailyQuota: m.dailyQuota ?? 0, monthlyQuota: m.monthlyQuota ?? 0 })) }

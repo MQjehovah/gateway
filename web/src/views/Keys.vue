@@ -364,7 +364,7 @@ const trendOption = computed(() => {
 });
 
 const createRef = ref<FormInstance>();
-const form = ref({ name: '', dailyQuota: 100000, monthlyQuota: 3000000, rateLimit: 60 });
+const form = ref({ name: '', dailyQuota: 0, monthlyQuota: 0, rateLimit: 60 });
 const editForm = ref<any>({});
 
 interface ModelQuotaRow {
@@ -439,7 +439,7 @@ const loadKeys = async () => {
 };
 
 const openCreate = () => {
-  form.value = { name: '', dailyQuota: 100000, monthlyQuota: 3000000, rateLimit: 60 };
+  form.value = { name: '', dailyQuota: 0, monthlyQuota: 0, rateLimit: 60 };
   modelQuotaRows.value = buildModelQuotaRows([]);
   newModelId.value = null;
   createOpen.value = true;

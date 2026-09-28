@@ -190,8 +190,8 @@ test('GET /api/me/key: 首次调用创建系统托管 key(created=true, 默认�
   assert.equal(body.keyId, 101);
   assert.match(body.key, /^sk-[0-9a-f]{64}$/);
   assert.equal(body.rateLimit, 60);
-  assert.equal(body.dailyQuota, 100000);
-  assert.equal(body.monthlyQuota, 3000000);
+  assert.equal(body.dailyQuota, 0);
+  assert.equal(body.monthlyQuota, 0);
   assert.equal(body.employeeId, 'E001');
   assert.equal(body.name, '张三');
   assert.equal(body.email, 'zhangsan@example.com');

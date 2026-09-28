@@ -87,8 +87,9 @@ model ApiKey {
   /// 工作台自动创建/托管的密钥：自动开通与用量统计按其归属，非管理员不可删除
   isSystem     Boolean      @default(false)
   rateLimit    Int          @default(60)
-  dailyQuota   BigInt       @default(100000)
-  monthlyQuota BigInt       @default(3000000)
+  /// 日/月 token 配额，0 = 不限
+  dailyQuota   BigInt       @default(0)
+  monthlyQuota BigInt       @default(0)
     expiresAt    DateTime?
     createdAt    DateTime     @default(now())
     /// 逻辑删除时间：非空表示已删除。列表与使用统计都排除；用量/账单记录因外键保留。

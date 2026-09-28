@@ -25,10 +25,10 @@ export function systemKeyWhere(userId: number): Prisma.ApiKeyWhereInput {
   };
 }
 
-/** 无 key 时创建、复用回显时的默认限流与配额(与 ApiKey schema 默认值一致) */
+/** 无 key 时创建、复用回显时的默认限流与配额(与 ApiKey schema 默认值一致; 配额 0 = 不限) */
 export const DEFAULT_RATE_LIMIT = 60;
-export const DEFAULT_DAILY_QUOTA = 100000;
-export const DEFAULT_MONTHLY_QUOTA = 3000000;
+export const DEFAULT_DAILY_QUOTA = 0;
+export const DEFAULT_MONTHLY_QUOTA = 0;
 
 export interface EnsuredUserKey {
   key: string;
