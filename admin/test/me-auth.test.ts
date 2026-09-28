@@ -202,11 +202,13 @@ test('authenticateSso: 未知工号自动开通(JIT)并放行', async () => {
   assert.equal(body.role, 'USER');
   assert.equal(calls.create, 1, '未知工号应自动建号一次');
   assert.equal(calls.findUnique, 1, 'token 无 email 时不触发邮箱预检');
-  // 建号契约: 工号/name 来自 SSO, passwordHash 置空(不可本地密码登录)
+  // 建号契约: 工号/name 来自 SSO, passwordHash 置空(不可本地密码登录), 部门/手机号随 claims 落库
   assert.deepEqual(calls.lastCreate.data, {
     employeeId: 'E404',
     name: '张三',
     email: null,
+    department: null,
+    phone: null,
     passwordHash: '',
     role: 'USER'
   });
@@ -235,10 +237,19 @@ test('authenticateSso: 有效 token 挂载 req.ssoUser 并放行(最小字段契
     email: 'zhangsan@example.com',
     role: 'USER'
   });
-  // 查询条件与 select 契约: 只取 id/employeeId/name/email/role/balance, 绝不带 passwordHash
+  // 查询条件与 select 契约: 只取 id/employeeId/name/email/department/phone/role/balance, 绝不带 passwordHash
   assert.deepEqual(calls.lastArgs, {
     where: { employeeId: 'E001' },
-    select: { id: true, employeeId: true, name: true, email: true, role: true, balance: true }
+    select: {
+      id: true,
+      employeeId: true,
+      name: true,
+      email: true,
+      department: true,
+      phone: true,
+      role: true,
+      balance: true
+    }
   });
   assert.ok(!('passwordHash' in calls.lastArgs.select), 'select 不得包含 passwordHash');
   await app.close();

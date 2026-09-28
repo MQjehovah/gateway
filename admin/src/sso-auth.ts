@@ -9,11 +9,45 @@ export const ssoUserSelect = {
   employeeId: true,
   name: true,
   email: true,
+  department: true,
+  phone: true,
   role: true,
   balance: true
 } satisfies Prisma.UserSelect;
 
 export type SsoUser = Prisma.UserGetPayload<{ select: typeof ssoUserSelect }>;
+
+/// 读取非空字符串 claim(trim 后为空视作缺失, 与建号时 email/name 的处理一致)
+function nonEmptyClaim(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+/// 计算已开通用户的资料回写字段: 仅非空 claim 且与库中值不同才写;
+/// email 沿用建号语义(被他人占用则跳过, 避免唯一约束冲突); 无变化时返回 null(不发 update)
+async function ssoProfileUpdates(
+  prisma: PrismaClient,
+  user: SsoUser,
+  claims: JWTPayload
+): Promise<Prisma.UserUpdateInput | null> {
+  const data: Prisma.UserUpdateInput = {};
+
+  const name = nonEmptyClaim(claims.name);
+  if (name && name !== user.name) data.name = name;
+
+  const department = nonEmptyClaim(claims.dept);
+  if (department && department !== user.department) data.department = department;
+
+  const phone = nonEmptyClaim(claims.mobile);
+  if (phone && phone !== user.phone) data.phone = phone;
+
+  const email = nonEmptyClaim(claims.email);
+  if (email && email !== user.email) {
+    const emailTaken = await prisma.user.findUnique({ where: { email }, select: { id: true } });
+    if (!emailTaken) data.email = email;
+  }
+
+  return Object.keys(data).length > 0 ? data : null;
+}
 
 /// 路由侧防御: authenticateSso 未挂载(新路由漏配 preHandler)时明确抛错, 由 Fastify 统一 500,
 /// 避免把「拿不到用户」误当成匿名访问继续执行
@@ -70,7 +104,7 @@ export function createAuthenticateSso(prisma: PrismaClient) {
     }
     if (!user) {
       // 员工首次通过 SSO 访问: 自动开通(与 rag/market/agent 一致的 JIT 建号)
-      const email = typeof claims.email === 'string' && claims.email.trim() ? claims.email.trim() : null;
+      const email = nonEmptyClaim(claims.email);
       // 邮箱可能已被本地/其它账号占用(唯一约束): 被占用则不带邮箱建号
       const emailTaken = email
         ? await prisma.user.findUnique({ where: { email }, select: { id: true } })
@@ -79,8 +113,10 @@ export function createAuthenticateSso(prisma: PrismaClient) {
         user = await prisma.user.create({
           data: {
             employeeId,
-            name: typeof claims.name === 'string' && claims.name.trim() ? claims.name.trim() : employeeId,
+            name: nonEmptyClaim(claims.name) ?? employeeId,
             email: emailTaken ? null : email,
+            department: nonEmptyClaim(claims.dept),
+            phone: nonEmptyClaim(claims.mobile),
             passwordHash: '', // SSO 用户: 本地密码登录不可用
             role: 'USER'
           },
@@ -92,6 +128,21 @@ export function createAuthenticateSso(prisma: PrismaClient) {
         user = await prisma.user.findUnique({ where: { employeeId }, select: ssoUserSelect });
         if (!user) {
           req.log.error({ err }, 'SSO 用户自动开通失败');
+          throw err;
+        }
+      }
+    } else {
+      // 已开通用户: 用最新 SSO claims 回写资料(非空且变化才写; role 不在此处调整)
+      const updates = await ssoProfileUpdates(prisma, user, claims);
+      if (updates) {
+        try {
+          user = await prisma.user.update({
+            where: { employeeId },
+            data: updates,
+            select: ssoUserSelect
+          });
+        } catch (err) {
+          req.log.error({ err }, 'SSO 用户资料回写失败');
           throw err;
         }
       }
