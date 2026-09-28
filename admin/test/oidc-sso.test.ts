@@ -62,7 +62,7 @@ test('isOidcConfigured: requires issuer and audience', () => {
   assert.equal(isOidcConfigured(), false);
   process.env.OIDC_ISSUER = 'https://idp.example.com';
   assert.equal(isOidcConfigured(), false);
-  process.env.OIDC_AUDIENCE = 'router-admin';
+  process.env.OIDC_AUDIENCE = 'gateway-admin';
   assert.equal(isOidcConfigured(), true);
   delete process.env.OIDC_ISSUER;
   delete process.env.OIDC_AUDIENCE;
@@ -74,7 +74,7 @@ test('isOidcConfigured: explicit audience substitutes for OIDC_AUDIENCE', () => 
   process.env.OIDC_ISSUER = 'https://idp.example.com';
   try {
     assert.equal(isOidcConfigured(), false);
-    assert.equal(isOidcConfigured('router-admin'), true);
+    assert.equal(isOidcConfigured('gateway-admin'), true);
   } finally {
     delete process.env.OIDC_ISSUER;
   }
@@ -84,8 +84,8 @@ test('isOidcConfigured: explicit audience substitutes for OIDC_AUDIENCE', () => 
 
 function withSsoLoginEnv<T>(fn: () => T): T {
   process.env.OIDC_ISSUER = 'https://sso.example.com';
-  process.env.OIDC_CLIENT_ID = 'router-admin';
-  process.env.OIDC_REDIRECT_URI = 'https://ai.example.com/router/api/auth/oidc/callback';
+  process.env.OIDC_CLIENT_ID = 'gateway-admin';
+  process.env.OIDC_REDIRECT_URI = 'https://ai.example.com/gateway/api/auth/oidc/callback';
   try {
     return fn();
   } finally {
@@ -101,7 +101,7 @@ test('isSsoLoginConfigured: requires issuer + client_id + redirect_uri', () => {
   delete process.env.OIDC_REDIRECT_URI;
   assert.equal(isSsoLoginConfigured(), false);
   process.env.OIDC_ISSUER = 'https://sso.example.com';
-  process.env.OIDC_CLIENT_ID = 'router-admin';
+  process.env.OIDC_CLIENT_ID = 'gateway-admin';
   assert.equal(isSsoLoginConfigured(), false);
   process.env.OIDC_REDIRECT_URI = 'https://ai.example.com/cb';
   try {
@@ -138,11 +138,11 @@ test('buildSsoAuthorizeUrl: carries client_id / redirect_uri / state', () => {
   withSsoLoginEnv(() => {
     const url = buildSsoAuthorizeUrl('st-1');
     assert.match(url, /^https:\/\/sso\.example\.com\/authorize\?/);
-    assert.match(url, /client_id=router-admin/);
+    assert.match(url, /client_id=gateway-admin/);
     assert.match(url, /state=st-1/);
     assert.match(
       url,
-      /redirect_uri=https%3A%2F%2Fai\.example\.com%2Frouter%2Fapi%2Fauth%2Foidc%2Fcallback/
+      /redirect_uri=https%3A%2F%2Fai\.example\.com%2Fgateway%2Fapi%2Fauth%2Foidc%2Fcallback/
     );
     assert.match(url, /response_type=code/);
   });

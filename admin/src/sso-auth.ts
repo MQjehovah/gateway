@@ -24,7 +24,7 @@ export function requireSsoUser(req: FastifyRequest): SsoUser {
   return req.ssoUser;
 }
 
-/// 员工端 dashboard 用 SSO 交换来的 router token 访问用户态接口的鉴权钩子：
+/// 员工端 dashboard 用 SSO 交换来的 gateway token 访问用户态接口的鉴权钩子：
 /// 无 token/验签失败 → 401；token 无工号或用户未开通 → 403；通过后把用户挂到 req.ssoUser。
 /// 配置缺失与查库故障属于基础设施错误, 抛给 Fastify 走 500(绝不伪装成 401)。
 /// 以工厂形式导出，便于测试挂真实 JWKS 端到端覆盖各分支（index.ts 在 decorate 时装配）。
@@ -32,7 +32,7 @@ export function createAuthenticateSso(prisma: PrismaClient) {
   return async (req: FastifyRequest, reply: FastifyReply): Promise<void> => {
     // 验签能力缺失是服务端配置故障, 与请求凭证无关
     if (!isSsoTokenConfigured()) {
-      throw new Error('SSO router token 未配置(OIDC_ISSUER / SSO_ROUTER_AUDIENCE)');
+      throw new Error('SSO gateway token 未配置(OIDC_ISSUER / SSO_GATEWAY_AUDIENCE)');
     }
 
     const auth = String(req.headers.authorization ?? '');
@@ -46,7 +46,7 @@ export function createAuthenticateSso(prisma: PrismaClient) {
     try {
       claims = await verifySsoToken(auth.slice(7));
     } catch (err) {
-      req.log.warn({ err }, 'SSO router token 校验失败');
+        req.log.warn({ err }, 'SSO gateway token 校验失败');
       reply.status(401).send({ error: 'Unauthorized' });
       return;
     }

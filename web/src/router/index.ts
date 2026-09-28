@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router';
 import type { RouteRecordRaw } from 'vue-router';
 import { useAuthStore } from '../stores/auth';
+import { getToken } from '../token';
 
 const routes: RouteRecordRaw[] = [
   {
@@ -64,7 +65,7 @@ const router = createRouter({
 });
 
 router.beforeEach(async (to, from, next) => {
-  const token = localStorage.getItem('router_token');
+  const token = getToken();
   if (to.path !== '/login' && !token) {
     next('/login');
   } else if (to.path === '/login' && token) {

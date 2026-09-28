@@ -20,7 +20,7 @@ interface LoginBody {
   password: string;
 }
 
-/// 前端登录页地址（回调携带 token 回到该页）；部署在子路径下时为 /router/login
+/// 前端登录页地址（回调携带 token 回到该页）；部署在子路径下时为 /gateway/login
 function loginTarget(): string {
   return process.env.OIDC_REDIRECT_TARGET || '/login';
 }

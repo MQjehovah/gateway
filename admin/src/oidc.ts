@@ -71,26 +71,43 @@ export async function verifyIdToken(idToken: string, audience?: string): Promise
   return payload;
 }
 
-/// SSO router token 验签是否可用(员工端 dashboard 交换出的 token 受众)
-export function isSsoTokenConfigured(): boolean {
-  return isOidcConfigured(process.env.SSO_ROUTER_AUDIENCE || 'router');
+/// 员工端交换出的 SSO token 可接受受众:env 显式配置时以配置为准;
+/// 未配置时过渡期默认同时接受 gateway(新)与 router(旧),保证新旧桌面端并存
+function ssoTokenAudiences(): string[] {
+  const explicit = [process.env.SSO_GATEWAY_AUDIENCE, process.env.SSO_ROUTER_AUDIENCE].filter(
+    (value): value is string => Boolean(value && value.trim())
+  );
+  return explicit.length > 0 ? [...new Set(explicit)] : ['gateway', 'router'];
 }
 
-/// 校验员工端交换来的 router token(签名/iss/aud/exp)；aud 取 SSO_ROUTER_AUDIENCE，默认 router
+/// SSO gateway token 验签是否可用(员工端 dashboard 交换出的 token 受众)
+export function isSsoTokenConfigured(): boolean {
+  return isOidcConfigured(ssoTokenAudiences()[0]);
+}
+
+/// 校验员工端交换来的 gateway token(签名/iss/aud/exp);依次尝试 gateway/router 受众,任一通过即可
 export async function verifySsoToken(token: string): Promise<JWTPayload> {
-  const audience = process.env.SSO_ROUTER_AUDIENCE || 'router';
-  if (!isOidcConfigured(audience)) {
+  const audiences = ssoTokenAudiences();
+  if (!isOidcConfigured(audiences[0])) {
     throw new Error('OIDC not configured (OIDC_ISSUER missing)');
   }
 
   const jwks = await getJwksFetcher();
-  const { payload } = await jwtVerify(token, jwks, {
-    issuer: process.env.OIDC_ISSUER,
-    audience,
-    algorithms: ['RS256'],
-    clockTolerance: 30
-  });
-  return payload;
+  let lastError: unknown;
+  for (const audience of audiences) {
+    try {
+      const { payload } = await jwtVerify(token, jwks, {
+        issuer: process.env.OIDC_ISSUER,
+        audience,
+        algorithms: ['RS256'],
+        clockTolerance: 30
+      });
+      return payload;
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError));
 }
 
 /// 从 payload 提取工号：优先取配置的 claim（OIDC_EMPLOYEE_ID_CLAIM），再尝试常见命名，

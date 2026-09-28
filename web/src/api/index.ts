@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { clearToken, getToken } from '../token';
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || (import.meta.env.BASE_URL || '/').replace(/\/$/, ''),
@@ -6,7 +7,7 @@ const api = axios.create({
 });
 
 api.interceptors.request.use(config => {
-  const token = localStorage.getItem('router_token');
+  const token = getToken();
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
   }
@@ -17,7 +18,7 @@ api.interceptors.response.use(
   response => response,
   error => {
     if (error.response?.status === 401) {
-      localStorage.removeItem('router_token');
+      clearToken();
       window.location.href = (import.meta.env.BASE_URL || '/') + 'login';
     }
     return Promise.reject(error);
