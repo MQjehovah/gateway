@@ -178,7 +178,7 @@ interface BuildOptions {
 
 async function buildApp(opts: BuildOptions = {}) {
   // 默认同月已重置(balanceResetAt=本月), 避免无关用例意外触发跨月写库; 需要跨月场景时显式传入
-  const user =
+  let user =
     opts.user === undefined
       ? { ...USER, balanceResetAt: new Date() }
       : opts.user === null
@@ -192,6 +192,7 @@ async function buildApp(opts: BuildOptions = {}) {
   const calls = {
     writes: 0,
     userFindUnique: 0,
+    userCreate: 0,
     userUpdateMany: 0,
     transactionCreate: 0,
     keyFindFirst: 0,
@@ -235,6 +236,20 @@ async function buildApp(opts: BuildOptions = {}) {
           return args.where.id === user.id ? user : null;
         }
         return null;
+      },
+      // JIT 建号替身: 内存插入新用户(与 Prisma 默认一致 balance=0/balanceResetAt=null)
+      create: async (args: any) => {
+        calls.userCreate++;
+        user = {
+          id: 901,
+          employeeId: args.data.employeeId,
+          name: args.data.name,
+          email: args.data.email,
+          role: args.data.role,
+          balance: 0,
+          balanceResetAt: null
+        };
+        return user;
       },
       // 跨月重置走条件幂等更新(updateMany), 命中才写 RECHARGE 流水
       updateMany: async (args: any) => {
@@ -411,13 +426,24 @@ test('GET /api/me/usage: aud 不符的 token 返回 401 且不查用量', async 
   await app.close();
 });
 
-test('GET /api/me/usage: 工号未知返回 403(用户未开通)', async () => {
-  const { app, calls } = await buildApp({ user: null, keys: [KEY] });
+test('GET /api/me/usage: 未知工号自动开通(JIT)后返回 200(空用量)', async () => {
+  const { app, calls } = await buildApp({ user: null, keys: [] });
   const token = await signRouterToken({ employeeId: 'E404' });
   const res = await injectUsage(app, `Bearer ${token}`);
-  assert.equal(res.statusCode, 403);
-  assert.deepEqual(res.json(), { error: 'Forbidden', detail: '用户未开通' });
-  assert.equal(calls.keyFindFirst, 0, '鉴权失败不应查用量');
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+
+  assert.equal(calls.userCreate, 1, '未知工号应由 SSO 钩子自动建号');
+  // 新建用户 balanceResetAt 为空: 首访即完成本月额度初始化(与存量员工同口径)
+  assert.equal(body.balance, 100, '响应应使用初始化后的月度余额(SSO_MONTHLY_BALANCE 默认 100)');
+  assert.equal(calls.userUpdateMany, 1);
+  assert.equal(calls.transactionCreate, 1);
+  assert.equal(body.rateLimit, DEFAULT_RATE_LIMIT);
+  assert.deepEqual(body.quota, { daily: DEFAULT_DAILY_QUOTA, monthly: DEFAULT_MONTHLY_QUOTA });
+  assert.deepEqual(body.today, ZERO_BUCKET);
+  assert.deepEqual(body.month, ZERO_BUCKET);
+  assert.deepEqual(body.models, []);
+  assert.equal(calls.keyFindFirst, 1, '新用户无 sso key, 用量为空');
   await app.close();
 });
 

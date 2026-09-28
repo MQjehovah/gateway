@@ -76,15 +76,35 @@ interface FakeUser {
   balance: number;
 }
 
-function buildApp(user: FakeUser | null, opts: { failDb?: boolean } = {}) {
-  const calls = { findUnique: 0, lastArgs: null as any };
+function buildApp(user: FakeUser | null, opts: { failDb?: boolean; failCreate?: boolean } = {}) {
+  const calls = { findUnique: 0, create: 0, lastArgs: null as any, lastCreate: null as any };
+  let current = user;
   const prisma = {
     user: {
       findUnique: async (args: any) => {
         calls.findUnique++;
         calls.lastArgs = args;
         if (opts.failDb) throw new Error('db down');
-        return user && args.where.employeeId === user.employeeId ? user : null;
+        // email 预检(JIT 建号前查邮箱占用)与工号查询用各自的 where
+        if (args.where.email !== undefined) {
+          return current && current.email === args.where.email ? current : null;
+        }
+        return current && args.where.employeeId === current.employeeId ? current : null;
+      },
+      // JIT 建号替身: 内存插入新用户并作为后续查询的数据源(select 对本替身无意义, 忽略)
+      create: async (args: any) => {
+        calls.create++;
+        calls.lastCreate = args;
+        if (opts.failCreate) throw new Error('create failed');
+        current = {
+          id: 201,
+          employeeId: args.data.employeeId,
+          name: args.data.name,
+          email: args.data.email,
+          role: args.data.role,
+          balance: 0
+        };
+        return current;
       }
     }
   };
@@ -171,14 +191,35 @@ test('authenticateSso: 有效签名但无工号返回 403 且不查库', async (
   await app.close();
 });
 
-test('authenticateSso: 未知工号返回 403(用户未开通)', async () => {
+test('authenticateSso: 未知工号自动开通(JIT)并放行', async () => {
   const { app, calls } = buildApp(null);
   const token = await signRouterToken({ employeeId: 'E404' });
   const res = await injectMe(app, `Bearer ${token}`);
-  assert.equal(res.statusCode, 403);
-  assert.deepEqual(res.json(), { error: 'Forbidden', detail: '用户未开通' });
-  assert.equal(calls.findUnique, 1);
-  assert.deepEqual(calls.lastArgs.where, { employeeId: 'E404' });
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+  assert.equal(body.employeeId, 'E404');
+  assert.equal(body.name, '张三');
+  assert.equal(body.role, 'USER');
+  assert.equal(calls.create, 1, '未知工号应自动建号一次');
+  assert.equal(calls.findUnique, 1, 'token 无 email 时不触发邮箱预检');
+  // 建号契约: 工号/name 来自 SSO, passwordHash 置空(不可本地密码登录)
+  assert.deepEqual(calls.lastCreate.data, {
+    employeeId: 'E404',
+    name: '张三',
+    email: null,
+    passwordHash: '',
+    role: 'USER'
+  });
+  await app.close();
+});
+
+test('authenticateSso: 自动开通失败且回查仍无返回 500(抛错)', async () => {
+  const { app, calls } = buildApp(null, { failCreate: true });
+  const token = await signRouterToken({ employeeId: 'E500' });
+  const res = await injectMe(app, `Bearer ${token}`);
+  assert.equal(res.statusCode, 500);
+  assert.equal(calls.create, 1);
+  assert.equal(calls.findUnique, 2, 'create 失败后应回查工号兜底');
   await app.close();
 });
 

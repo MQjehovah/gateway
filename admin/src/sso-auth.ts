@@ -25,7 +25,7 @@ export function requireSsoUser(req: FastifyRequest): SsoUser {
 }
 
 /// 员工端 dashboard 用 SSO 交换来的 gateway token 访问用户态接口的鉴权钩子：
-/// 无 token/验签失败 → 401；token 无工号或用户未开通 → 403；通过后把用户挂到 req.ssoUser。
+/// 无 token/验签失败 → 401；token 无工号 → 403；未知工号自动开通(JIT)；通过后把用户挂到 req.ssoUser。
 /// 配置缺失与查库故障属于基础设施错误, 抛给 Fastify 走 500(绝不伪装成 401)。
 /// 以工厂形式导出，便于测试挂真实 JWKS 端到端覆盖各分支（index.ts 在 decorate 时装配）。
 export function createAuthenticateSso(prisma: PrismaClient) {
@@ -69,8 +69,32 @@ export function createAuthenticateSso(prisma: PrismaClient) {
       throw err;
     }
     if (!user) {
-      reply.status(403).send({ error: 'Forbidden', detail: '用户未开通' });
-      return;
+      // 员工首次通过 SSO 访问: 自动开通(与 rag/market/agent 一致的 JIT 建号)
+      const email = typeof claims.email === 'string' && claims.email.trim() ? claims.email.trim() : null;
+      // 邮箱可能已被本地/其它账号占用(唯一约束): 被占用则不带邮箱建号
+      const emailTaken = email
+        ? await prisma.user.findUnique({ where: { email }, select: { id: true } })
+        : null;
+      try {
+        user = await prisma.user.create({
+          data: {
+            employeeId,
+            name: typeof claims.name === 'string' && claims.name.trim() ? claims.name.trim() : employeeId,
+            email: emailTaken ? null : email,
+            passwordHash: '', // SSO 用户: 本地密码登录不可用
+            role: 'USER'
+          },
+          select: ssoUserSelect
+        });
+        req.log.info({ employeeId }, 'SSO 用户首次访问, 已自动开通');
+      } catch (err) {
+        // 并发建号: 工号唯一约束冲突 → 回查兜底
+        user = await prisma.user.findUnique({ where: { employeeId }, select: ssoUserSelect });
+        if (!user) {
+          req.log.error({ err }, 'SSO 用户自动开通失败');
+          throw err;
+        }
+      }
     }
     req.ssoUser = user;
   };

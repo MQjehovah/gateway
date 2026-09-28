@@ -92,10 +92,12 @@ interface FakeKeyRow {
 
 async function buildApp(user: FakeUser | null = USER) {
   const rows: FakeKeyRow[] = [];
+  let current = user;
   const calls = {
     writes: 0,
     findFirst: 0,
     create: 0,
+    userCreate: 0,
     lastCreate: null as any
   };
 
@@ -112,7 +114,25 @@ async function buildApp(user: FakeUser | null = USER) {
 
   const prisma = {
     user: {
-      findUnique: async (args: any) => (user && args.where.employeeId === user.employeeId ? user : null)
+      findUnique: async (args: any) => {
+        if (args.where.email !== undefined) {
+          return current && current.email === args.where.email ? current : null;
+        }
+        return current && args.where.employeeId === current.employeeId ? current : null;
+      },
+      // JIT 建号替身: 内存插入新用户, 供 authenticateSso 与后续 ensureUserKey 使用
+      create: async (args: any) => {
+        calls.userCreate++;
+        current = {
+          id: 201,
+          employeeId: args.data.employeeId,
+          name: args.data.name,
+          email: args.data.email,
+          role: args.data.role,
+          balance: 0
+        };
+        return current;
+      }
     },
     apiKey: {
       findFirst: async (args: any) => {
@@ -208,14 +228,24 @@ test('GET /api/me/key: 无 token 返回 401 且不触碰 key', async () => {
   await app.close();
 });
 
-test('GET /api/me/key: 未知工号返回 403(用户未开通)', async () => {
+test('GET /api/me/key: 未知工号自动开通(JIT)并返回 key', async () => {
   const { app, calls } = await buildApp(null);
   const token = await signRouterToken({ employeeId: 'E404' });
   const res = await injectKey(app, `Bearer ${token}`);
-  assert.equal(res.statusCode, 403);
-  assert.deepEqual(res.json(), { error: 'Forbidden', detail: '用户未开通' });
-  assert.equal(calls.findFirst, 0);
-  assert.equal(calls.writes, 0);
+  assert.equal(res.statusCode, 200);
+  const body = res.json();
+
+  assert.equal(calls.userCreate, 1, '未知工号应由 SSO 钩子自动建号');
+  assert.equal(body.created, true);
+  assert.match(body.key, /^sk-[0-9a-f]{64}$/);
+  assert.equal(body.employeeId, 'E404');
+  assert.equal(body.name, '张三');
+  assert.equal(body.email, null);
+  assert.equal(calls.findFirst, 1);
+  assert.equal(calls.create, 1, '新建用户首次取 key 应落一行系统托管 key');
+  assert.equal(calls.lastCreate.data.userId, 201);
+  assert.equal(calls.lastCreate.data.isSystem, true);
+  assert.equal(calls.writes, 1);
   await app.close();
 });
 
