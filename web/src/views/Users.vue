@@ -30,16 +30,29 @@
           <el-empty description="暂无用户" :image-size="80" />
         </template>
         <el-table-column prop="id" label="ID" width="64" class-name="font-mono" />
-        <el-table-column label="用户" min-width="200">
+        <el-table-column label="工号" width="120" class-name="font-mono">
           <template #default="{ row }">
-            <div class="user-cell">
-              <span class="u-avatar" :class="row.role === 'ADMIN' ? 'is-admin' : ''">{{ (row.name || row.email).slice(0, 1).toUpperCase() }}</span>
-                <div>
-                  <div class="u-name">{{ row.name || '—' }}</div>
-                  <div class="u-mail font-mono">{{ row.email || '（无邮箱）' }}</div>
-                  <div v-if="row.employeeId" class="u-mail font-mono" style="opacity:.7">工号 {{ row.employeeId }} · 统一认证</div>
-                </div>
-            </div>
+            <span>{{ row.employeeId || '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="姓名" min-width="110">
+          <template #default="{ row }">
+            <span class="u-name">{{ row.name || '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="手机" width="130" class-name="font-mono">
+          <template #default="{ row }">
+            <span>{{ row.phone || '—' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="邮箱" min-width="200" class-name="font-mono">
+          <template #default="{ row }">
+            <span class="u-mail">{{ row.email || '（无邮箱）' }}</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="部门" min-width="120">
+          <template #default="{ row }">
+            <span>{{ row.department || '—' }}</span>
           </template>
         </el-table-column>
         <el-table-column label="角色" width="110">
@@ -257,28 +270,6 @@ onMounted(loadUsers);
 .filter { width: 130px; }
 .table-card { padding: 6px 8px; }
 
-.user-cell {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-.u-avatar {
-  flex: none;
-  width: 34px;
-  height: 34px;
-  display: grid;
-  place-items: center;
-  border-radius: 10px;
-  background: var(--bg-surface-2);
-  border: 1px solid var(--border);
-  color: var(--text-2);
-  font-weight: 600;
-}
-.u-avatar.is-admin {
-  background: linear-gradient(135deg, rgba(251,113,133,.2), rgba(251,113,133,.08));
-  border-color: rgba(251,113,133,.3);
-  color: #fda4af;
-}
 .u-name { font-weight: 500; color: var(--text-1); }
 .u-mail { font-size: 12px; color: var(--text-3); }
 

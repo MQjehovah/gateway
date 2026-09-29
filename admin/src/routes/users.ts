@@ -28,7 +28,7 @@ export async function userRoutes(fastify: FastifyInstance) {
     }
     
     const users = await prisma.user.findMany({
-      select: { id: true, email: true, name: true, employeeId: true, role: true, balance: true, createdAt: true },
+      select: { id: true, email: true, name: true, employeeId: true, department: true, phone: true, role: true, balance: true, createdAt: true },
       orderBy: { createdAt: 'desc' }
     });
     return users;
@@ -51,7 +51,7 @@ export async function userRoutes(fastify: FastifyInstance) {
     const passwordHash = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
       data: { email, passwordHash, name, role },
-      select: { id: true, email: true, name: true, role: true, createdAt: true }
+      select: { id: true, email: true, name: true, department: true, phone: true, role: true, createdAt: true }
     });
 
     writeAudit({
@@ -84,7 +84,7 @@ export async function userRoutes(fastify: FastifyInstance) {
     const user = await prisma.user.update({
       where: { id: userId },
       data,
-      select: { id: true, email: true, name: true, role: true, balance: true }
+      select: { id: true, email: true, name: true, department: true, phone: true, role: true, balance: true }
     });
 
     writeAudit({
