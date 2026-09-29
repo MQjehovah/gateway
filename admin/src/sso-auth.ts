@@ -59,7 +59,8 @@ export function requireSsoUser(req: FastifyRequest): SsoUser {
 }
 
 /// 员工端 dashboard 用 SSO 交换来的 gateway token 访问用户态接口的鉴权钩子：
-/// 无 token/验签失败 → 401；token 无工号 → 403；未知工号自动开通(JIT)；通过后把用户挂到 req.ssoUser。
+/// 无 token/验签失败 → 401；token 无工号 → 403；匹配顺序: 工号(=sub) → 邮箱(大小写不敏感),
+/// 都未命中才自动开通(JIT)；通过后把用户挂到 req.ssoUser。
 /// 配置缺失与查库故障属于基础设施错误, 抛给 Fastify 走 500(绝不伪装成 401)。
 /// 以工厂形式导出，便于测试挂真实 JWKS 端到端覆盖各分支（index.ts 在 decorate 时装配）。
 export function createAuthenticateSso(prisma: PrismaClient) {
@@ -102,6 +103,35 @@ export function createAuthenticateSso(prisma: PrismaClient) {
       req.log.error({ err }, '查询 SSO 用户失败');
       throw err;
     }
+
+    // 工号未命中: 按邮箱(大小写不敏感)对齐系统自建/历史账号, 避免同一人两份账号。
+    // 命中且未登记工号 → 补写 employeeId=sub(对齐后走工号); 已绑定其它工号属异常数据,
+    // 跳过补写并告警, 资料回写照常。
+    let linkEmployeeId = false;
+    if (!user) {
+      const email = nonEmptyClaim(claims.email);
+      if (email) {
+        try {
+          user = await prisma.user.findFirst({
+            where: { email: { equals: email, mode: 'insensitive' } },
+            select: ssoUserSelect
+          });
+        } catch (err) {
+          req.log.error({ err }, '按邮箱查询 SSO 用户失败');
+          throw err;
+        }
+        if (user) {
+          if (!user.employeeId) {
+            linkEmployeeId = true;
+          } else if (user.employeeId !== employeeId) {
+            req.log.warn(
+              { employeeId, accountId: user.id, accountEmployeeId: user.employeeId },
+              'SSO 邮箱命中账号已绑定其它工号, 跳过补写(异常数据)'
+            );
+          }
+        }
+      }
+    }
     if (!user) {
       // 员工首次通过 SSO 访问: 自动开通(与 rag/market/agent 一致的 JIT 建号)
       const email = nonEmptyClaim(claims.email);
@@ -133,11 +163,16 @@ export function createAuthenticateSso(prisma: PrismaClient) {
       }
     } else {
       // 已开通用户: 用最新 SSO claims 回写资料(非空且变化才写; role 不在此处调整)
-      const updates = await ssoProfileUpdates(prisma, user, claims);
-      if (updates) {
+      const updates: Prisma.UserUpdateInput = (await ssoProfileUpdates(prisma, user, claims)) ?? {};
+      if (linkEmployeeId) {
+        // 邮箱命中的历史账号未登记工号: 对齐 SSO sub, 之后登录走工号直匹配
+        updates.employeeId = employeeId;
+      }
+      if (Object.keys(updates).length > 0) {
         try {
+          // 按主键更新: 匹配可能来自邮箱(此时 employeeId 为空, 不能作为 where 条件)
           user = await prisma.user.update({
-            where: { employeeId },
+            where: { id: user.id },
             data: updates,
             select: ssoUserSelect
           });

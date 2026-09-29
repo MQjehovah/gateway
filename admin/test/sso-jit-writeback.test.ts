@@ -66,24 +66,35 @@ interface FakeUser {
   balance: number;
 }
 
-function buildApp(seed: FakeUser[] = []) {
+function buildApp(seed: FakeUser[] = [], opts: { logs?: string[] } = {}) {
   const users = [...seed];
   let nextId = 400;
   const calls = {
     create: null as any,
     update: null as any,
     updateCount: 0,
-    lastFindUnique: null as any
+    findFirst: 0,
+    lastFindUnique: null as any,
+    lastFindFirst: null as any
   };
   const prisma = {
     user: {
       findUnique: async (args: any) => {
         calls.lastFindUnique = args;
-        // 邮箱预检与工号查询用各自的 where
+        // 邮箱预检(精确)与工号查询用各自的 where
         if (args.where.email !== undefined) {
           return users.find((u) => u.email === args.where.email) ?? null;
         }
         return users.find((u) => u.employeeId === args.where.employeeId) ?? null;
+      },
+      // 邮箱对齐查询: 仅 mode=insensitive 时按大小写不敏感比较(实现漏配 mode 则匹配不到)
+      findFirst: async (args: any) => {
+        calls.findFirst++;
+        calls.lastFindFirst = args;
+        const filter = args.where?.email;
+        if (!filter || filter.mode !== 'insensitive') return null;
+        const target = String(filter.equals ?? '').toLowerCase();
+        return users.find((u) => (u.email ?? '').toLowerCase() === target) ?? null;
       },
       create: async (args: any) => {
         calls.create = args;
@@ -94,14 +105,18 @@ function buildApp(seed: FakeUser[] = []) {
       update: async (args: any) => {
         calls.update = args;
         calls.updateCount++;
-        const idx = users.findIndex((u) => u.employeeId === args.where.employeeId);
+        const idx = users.findIndex((u) => u.id === args.where.id);
         users[idx] = { ...users[idx], ...args.data };
         return users[idx];
       }
     }
   };
 
-  const app = Fastify();
+  const app = opts.logs
+    ? Fastify({
+        logger: { level: 'warn', stream: { write: (line: string) => void opts.logs!.push(line) } }
+      })
+    : Fastify();
   app.decorate('authenticateSso', createAuthenticateSso(prisma as unknown as PrismaClient));
   app.get('/api/me', { preHandler: [app.authenticateSso] }, async (req) => {
     const ssoUser = requireSsoUser(req);
@@ -219,4 +234,86 @@ test('已存在回写: 邮箱变更写入, 被他人占用则跳过(不破坏唯
   assert.deepEqual(taken.calls.update.data, { department: '新部' }, '被占用邮箱不进 update');
   assert.equal(res.json().email, null);
   await taken.app.close();
+});
+
+// ---- 统一身份匹配: 工号 → 邮箱(大小写不敏感) → 新建 ----
+
+const NULL_EMPLOYEE: FakeUser = {
+  id: 21,
+  employeeId: null,
+  name: '旧名',
+  email: 'jit-link@example.com',
+  department: '旧部',
+  phone: null,
+  role: 'USER',
+  balance: 0
+};
+
+test('邮箱命中(账号无工号): 补写 employeeId=sub 并回写资料', async () => {
+  const { app, calls } = buildApp([{ ...NULL_EMPLOYEE }]);
+  const res = await injectMe(app, {
+    sub: 'E1006',
+    name: '网关测试乙',
+    email: 'jit-link@example.com',
+    dept: '新部',
+    mobile: '13900000033'
+  });
+  assert.equal(res.statusCode, 200);
+  assert.equal(calls.updateCount, 1, '邮箱命中应复用账号而非新建');
+  assert.equal(calls.create, null);
+  assert.deepEqual(calls.update.where, { id: 21 });
+  assert.deepEqual(calls.update.data, {
+    name: '网关测试乙',
+    department: '新部',
+    phone: '13900000033',
+    employeeId: 'E1006'
+  });
+  const body = res.json();
+  assert.equal(body.employeeId, 'E1006');
+  assert.equal(body.department, '新部');
+  await app.close();
+});
+
+test('邮箱匹配大小写不敏感: 混写邮箱命中并归一为 claim 值', async () => {
+  const mixed: FakeUser = { ...NULL_EMPLOYEE, id: 22, email: 'Jit-Link@Example.com' };
+  const { app, calls } = buildApp([mixed]);
+  const res = await injectMe(app, { sub: 'E1007', email: 'jit-link@example.com' });
+  assert.equal(res.statusCode, 200);
+  assert.equal(calls.lastFindFirst.where.email.mode, 'insensitive');
+  assert.equal(calls.update.data.employeeId, 'E1007');
+  assert.equal(res.json().email, 'jit-link@example.com', '回写归一为 claim 值');
+  await app.close();
+});
+
+test('token 无邮箱: 保持仅按工号匹配, 未命中直接 JIT 建号', async () => {
+  const { app, calls, users } = buildApp([{ ...NULL_EMPLOYEE }]);
+  const res = await injectMe(app, { sub: 'E1008', name: '丙' });
+  assert.equal(res.statusCode, 200);
+  assert.equal(calls.findFirst, 0, '无 email claim 不应按邮箱对齐');
+  assert.equal(calls.updateCount, 0);
+  assert.equal(users.length, 2, '工号未命中则新建');
+  assert.equal(res.json().employeeId, 'E1008');
+  await app.close();
+});
+
+test('邮箱命中但账号已绑定其它工号: 跳过补写并 WARNING, 资料照常回写', async () => {
+  const other: FakeUser = {
+    ...NULL_EMPLOYEE,
+    id: 23,
+    employeeId: 'E9999',
+    email: 'conflict@example.com'
+  };
+  const logs: string[] = [];
+  const { app, calls } = buildApp([other], { logs });
+  const res = await injectMe(app, {
+    sub: 'E1009',
+    name: '丁',
+    email: 'conflict@example.com',
+    dept: '新部'
+  });
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(calls.update.data, { name: '丁', department: '新部' }, '不补写工号, 其它字段照常回写');
+  assert.equal(res.json().employeeId, 'E9999', '原工号保持不变');
+  assert.ok(logs.some((line) => line.includes('异常数据')), `应打 WARNING; logs=${logs.join('')}`);
+  await app.close();
 });
