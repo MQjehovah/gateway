@@ -7,6 +7,8 @@ const prisma = new PrismaClient();
 interface RechargeBody {
   amount: number;
   description?: string;
+  /** 目标用户 id（管理员为他人充值）；缺省 = 给自己充值 */
+  userId?: number;
 }
 
 export async function billingRoutes(fastify: FastifyInstance) {
@@ -43,7 +45,7 @@ export async function billingRoutes(fastify: FastifyInstance) {
     preHandler: [fastify.authenticate]
   }, async (req, reply) => {
     // 仅管理员可充值：普通用户自行充值等于凭空增加额度（计费系统里的造币漏洞）。
-    // 管理员要给某个账号加额度走 PUT /api/users/:id 的 balance 字段。
+    // 管理员可给自己充值（userId 缺省），也可通过 userId 为指定用户充值（代充）。
     if (req.user.role !== 'ADMIN') {
       return reply.status(403).send({ error: '仅管理员可为账号充值' });
     }
@@ -53,29 +55,46 @@ export async function billingRoutes(fastify: FastifyInstance) {
       return reply.status(400).send({ error: 'Invalid amount' });
     }
 
-    const user = await prisma.user.update({
-      where: { id: req.user.id },
+    const db = fastify.prisma ?? prisma;
+    const rawTarget = Number(req.body.userId);
+    const targetId = Number.isFinite(rawTarget) && rawTarget > 0 ? rawTarget : req.user.id;
+    const isOther = targetId !== req.user.id;
+
+    if (isOther) {
+      const target = await db.user.findUnique({
+        where: { id: targetId },
+        select: { id: true, email: true, name: true }
+      });
+      if (!target) {
+        return reply.status(404).send({ error: '目标用户不存在' });
+      }
+    }
+
+    const user = await db.user.update({
+      where: { id: targetId },
       data: { balance: { increment: amount } }
     });
 
-    await prisma.transaction.create({
+    await db.transaction.create({
       data: {
-        userId: req.user.id,
+        userId: targetId,
         type: 'RECHARGE',
         amount,
         balance: user.balance,
-        description: req.body.description || 'Balance recharge'
+        description:
+          req.body.description ||
+          (isOther ? `管理员代充（操作人:${req.user.email}）` : 'Balance recharge')
       }
     });
 
     writeAudit({
       actorId: req.user.id,
-      action: 'recharge',
-      targetType: 'transaction',
-      targetId: req.user.id,
-      detail: { amount }
-    });
+      action: isOther ? 'recharge_for_user' : 'recharge',
+      targetType: 'user',
+      targetId,
+      detail: { amount, targetUserId: targetId, by: req.user.email }
+    }, db);
 
-    return { success: true, balance: user.balance };
+    return { success: true, balance: user.balance, userId: targetId };
   });
 }

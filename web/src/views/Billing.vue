@@ -5,7 +5,7 @@
           <h2 class="page-title">账户与账单</h2>
           <p class="page-sub">额度、消费流水与月结账单</p>
         </div>
-        <el-button v-if="authStore.isAdmin" type="primary" :icon="Plus" @click="rechargeOpen = true">充值</el-button>
+        <el-button v-if="authStore.isAdmin" type="primary" :icon="Plus" @click="openRecharge">充值</el-button>
       </header>
 
     <div class="banner tech-card">
@@ -78,8 +78,25 @@
       </section>
     </div>
 
-    <el-dialog v-model="rechargeOpen" title="账户充值" width="420px">
+    <el-dialog v-model="rechargeOpen" title="账户充值" width="440px">
       <el-form label-width="80px" @submit.prevent="handleRecharge">
+        <el-form-item label="充值对象">
+          <el-select
+            v-model="rechargeForm.userId"
+            filterable
+            clearable
+            :loading="usersLoading"
+            placeholder="默认：给自己充值"
+            style="width: 100%"
+          >
+            <el-option
+              v-for="u in users"
+              :key="u.id"
+              :label="`${u.name || u.email}（${u.email}，余额 $${Number(u.balance || 0).toFixed(2)}）`"
+              :value="u.id"
+            />
+          </el-select>
+        </el-form-item>
         <el-form-item label="金额">
           <el-input-number v-model="rechargeForm.amount" :min="1" :step="50" :precision="2" controls-position="right" style="width: 100%" />
         </el-form-item>
@@ -109,7 +126,27 @@ const bills = ref<any[]>([]);
 const loading = ref(false);
 const submitting = ref(false);
 const rechargeOpen = ref(false);
-const rechargeForm = ref({ amount: 100, description: '' });
+const users = ref<any[]>([]);
+const usersLoading = ref(false);
+const rechargeForm = ref<{ amount: number; description: string; userId: number | null }>({
+  amount: 100,
+  description: '',
+  userId: null
+});
+
+const openRecharge = async () => {
+  rechargeOpen.value = true;
+  rechargeForm.value.userId = null;
+  usersLoading.value = true;
+  try {
+    const res = await api.get('/api/users');
+    users.value = res.data;
+  } catch {
+    users.value = [];
+  } finally {
+    usersLoading.value = false;
+  }
+};
 
 const balance = computed(() => Number(authStore.user?.balance ?? 0));
 const monthCost = computed(() => bills.value.filter(b => b.status !== 'PENDING' || true).reduce((s, b) => s + Number(b.totalCost || 0), 0));
@@ -148,10 +185,22 @@ const loadData = async () => {
     if (rechargeForm.value.amount <= 0) return;
   submitting.value = true;
   try {
-    await api.post('/api/transactions/recharge', rechargeForm.value);
-    ElMessage.success('充值成功');
+    const target = rechargeForm.value.userId
+      ? users.value.find((u) => u.id === rechargeForm.value.userId)
+      : null;
+    await api.post('/api/transactions/recharge', {
+      amount: rechargeForm.value.amount,
+      description: rechargeForm.value.description,
+      ...(target ? { userId: target.id } : {})
+    });
+    ElMessage.success(
+      target
+        ? `已为 ${target.name || target.email} 充值 $${rechargeForm.value.amount}`
+        : '充值成功'
+    );
     rechargeOpen.value = false;
     rechargeForm.value.description = '';
+    rechargeForm.value.userId = null;
     loadData();
   } catch (e: any) {
     ElMessage.error(e.response?.data?.error || '充值失败');

@@ -72,8 +72,11 @@
             <span class="date font-mono">{{ fmtDate(row.createdAt) }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="操作" width="120" align="right">
+        <el-table-column label="操作" width="200" align="right">
           <template #default="{ row }">
+            <el-tooltip content="充值">
+              <el-button text type="success" :icon="Coin" class="row-btn" @click="openRecharge(row)" />
+            </el-tooltip>
             <el-tooltip content="编辑">
               <el-button text :icon="Edit" class="row-btn" @click="openEdit(row)" />
             </el-tooltip>
@@ -132,13 +135,34 @@
         <el-button type="primary" :loading="submitting" @click="handleUpdate">保存</el-button>
       </template>
     </el-dialog>
+
+    <el-dialog v-model="rechargeOpen" title="账户充值" width="440px" destroy-on-close>
+      <el-form label-width="80px">
+        <el-form-item label="充值对象">
+          <div>
+            {{ rechargeTarget?.name || rechargeTarget?.email }}
+            <span class="font-mono" style="color: var(--text-3)">（{{ rechargeTarget?.email }}，当前余额 ${{ Number(rechargeTarget?.balance || 0).toFixed(2) }}）</span>
+          </div>
+        </el-form-item>
+        <el-form-item label="金额">
+          <el-input-number v-model="rechargeAmount" :min="1" :step="50" :precision="2" controls-position="right" style="width: 100%" />
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="rechargeDesc" placeholder="可选，例如：季度预算补充" maxlength="40" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="rechargeOpen = false">取消</el-button>
+        <el-button type="primary" :loading="recharging" @click="doRecharge">确认充值</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus';
-import { Plus, Search, Refresh, Edit, Delete } from '@element-plus/icons-vue';
+import { Plus, Search, Refresh, Edit, Delete, Coin } from '@element-plus/icons-vue';
 import api from '../api';
 
 const users = ref<any[]>([]);
@@ -235,6 +259,40 @@ const handleDelete = async (row: any) => {
     loadUsers();
   } catch (e: any) {
     if (e !== 'cancel') ElMessage.error(e.response?.data?.error || '删除失败');
+  }
+};
+
+const rechargeOpen = ref(false);
+const rechargeTarget = ref<any>(null);
+const rechargeAmount = ref(100);
+const rechargeDesc = ref('');
+const recharging = ref(false);
+
+const openRecharge = (row: any) => {
+  rechargeTarget.value = row;
+  rechargeAmount.value = 100;
+  rechargeDesc.value = '';
+  rechargeOpen.value = true;
+};
+
+const doRecharge = async () => {
+  if (!rechargeTarget.value || rechargeAmount.value <= 0) return;
+  recharging.value = true;
+  try {
+    await api.post('/api/transactions/recharge', {
+      amount: rechargeAmount.value,
+      description: rechargeDesc.value,
+      userId: rechargeTarget.value.id
+    });
+    ElMessage.success(
+      `已为 ${rechargeTarget.value.name || rechargeTarget.value.email} 充值 $${rechargeAmount.value}`
+    );
+    rechargeOpen.value = false;
+    loadUsers();
+  } catch (e: any) {
+    ElMessage.error(e.response?.data?.error || '充值失败');
+  } finally {
+    recharging.value = false;
   }
 };
 
