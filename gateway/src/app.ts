@@ -1,5 +1,7 @@
 import Fastify, { FastifyServerOptions } from 'fastify';
 import cors from '@fastify/cors';
+import multipart from '@fastify/multipart';
+import websocket from '@fastify/websocket';
 
 import { corsOrigins, requireSecret } from './env.js';
 import { authenticate } from './middleware/auth.js';
@@ -9,6 +11,7 @@ import { chatRoutes } from './routes/chat.js';
 import { responsesRoutes } from './routes/responses.js';
 import { messagesRoutes } from './routes/messages.js';
 import { embeddingsRoutes } from './routes/embeddings.js';
+import { audioRoutes } from './routes/audio.js';
 
 export async function buildApp(opts: FastifyServerOptions = {}) {
   requireSecret('INTERNAL_SECRET', process.env.INTERNAL_SECRET);
@@ -16,6 +19,8 @@ export async function buildApp(opts: FastifyServerOptions = {}) {
   const fastify = Fastify({ ...opts, bodyLimit: bodyLimitMb * 1024 * 1024 });
 
   await fastify.register(cors, { origin: corsOrigins(), credentials: true });
+  await fastify.register(multipart, { limits: { fileSize: 30 * 1024 * 1024, files: 1 } });
+  await fastify.register(websocket);
 
   fastify.decorate('authenticate', authenticate);
   fastify.decorate('rateLimit', rateLimit);
@@ -25,6 +30,7 @@ export async function buildApp(opts: FastifyServerOptions = {}) {
   await fastify.register(responsesRoutes);
   await fastify.register(messagesRoutes);
   await fastify.register(embeddingsRoutes);
+  await fastify.register(audioRoutes);
 
   fastify.get('/health', async () => ({ status: 'ok' }));
 
