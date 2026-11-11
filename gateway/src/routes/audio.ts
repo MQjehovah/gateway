@@ -1,16 +1,30 @@
 import { FastifyInstance, FastifyRequest } from 'fastify';
 import { Readable } from 'node:stream';
-import { fetch } from 'undici';
+import { Agent, fetch } from 'undici';
 import { WebSocket } from 'ws';
 import { resolveProvider } from './helpers.js';
 
 const ASR_MODEL = 'voice-asr';
+const ASR_STREAM_MODEL = 'voice-asr-moss';
 const TTS_MODEL = 'voice-tts';
 const ASR_UPSTREAM_MODEL = 'qwen3-asr-0.6b';
+const ASR_UPSTREAM_MODELS: Record<string, string> = {
+  [ASR_MODEL]: ASR_UPSTREAM_MODEL,
+  [ASR_STREAM_MODEL]: 'moss-transcribe-diarize'
+};
 const UPSTREAM_ASR_PATH = '/v1/audio/transcriptions';
 const UPSTREAM_ASR_STREAM_PATH = '/v1/audio/transcriptions/stream';
 const UPSTREAM_TTS_PATH = '/v1/audio/speech';
 const UPSTREAM_TTS_STREAM_PATH = '/v1/audio/speech/stream';
+
+// 会议转写可能持续几十分钟；关闭 undici 的 5 分钟 body/headers 超时。
+const ASR_DISPATCHER = new Agent({
+  connect: { timeout: 120000 },
+  headersTimeout: 0,
+  bodyTimeout: 0,
+  keepAliveTimeout: 60000,
+  keepAliveMaxTimeout: 120000
+});
 
 function gatewayModel(req: FastifyRequest, fallback: string): string {
   const q = (req.query as any)?.model;
@@ -44,49 +58,111 @@ async function sendUpstreamText(reply: any, response: any) {
 }
 
 export async function audioRoutes(fastify: FastifyInstance) {
-  // ---------- ASR: multipart 上传 ----------
+  // ---------- ASR: multipart 上传（支持 SSE 流式） ----------
   fastify.post('/v1/audio/transcriptions', {
     preHandler: [fastify.authenticate, fastify.rateLimit]
   }, async (req, reply) => {
-    const model = gatewayModel(req, ASR_MODEL);
-    const resolved = await resolveProvider(req, model);
-    if (!resolved.ok) {
-      return reply.status(resolved.status).send(resolved.body);
+    let filePart: any = null;
+    let buffer: Buffer | null = null;
+    const fields: Record<string, string> = {};
+
+    try {
+      // 用 parts() 而不是 file().fields：保证 file 之后出现的 stream/max_new_tokens 也被读取。
+      for await (const part of (req as any).parts()) {
+        if (part.type === 'file') {
+          if (filePart) {
+            part.file.resume();
+            continue;
+          }
+          filePart = part;
+          buffer = await part.toBuffer();
+        } else {
+          fields[part.fieldname] = String(part.value ?? '');
+        }
+      }
+    } catch (err: any) {
+      req.log.warn(err, 'ASR multipart parse failed');
+      return reply.status(400).send({
+        error: { message: 'invalid multipart body', type: 'invalid_request_error', code: 'invalid_multipart' }
+      });
     }
 
-    const part = await (req as any).file();
-    if (!part) {
+    if (!filePart || !buffer) {
       return reply.status(400).send({
         error: { message: 'file is required', type: 'invalid_request_error', code: 'missing_file' }
       });
     }
 
-    try {
-      const buffer = await part.toBuffer();
-      const fields = (part as any).fields || {};
-      const form = new FormData();
-      const blob = new Blob([buffer], { type: part.mimetype || 'application/octet-stream' });
-      form.append('file', blob, part.filename || 'audio.wav');
-      form.append('model', ASR_UPSTREAM_MODEL);
+    const streamRequested = ['1', 'true', 'yes', 'on'].includes(
+      String(fields.stream || '').trim().toLowerCase()
+    );
+    const formModel = String(fields.model || '').trim();
+    const model =
+      gatewayModel(req, '') ||
+      formModel ||
+      (streamRequested ? ASR_STREAM_MODEL : ASR_MODEL);
 
-      for (const name of ['language', 'response_format']) {
-        const field: any = fields[name];
-        const value = field?.value;
-        if (typeof value === 'string' && value.trim()) {
-          form.append(name, value.trim());
-        }
+    const resolved = await resolveProvider(req, model);
+    if (!resolved.ok) {
+      return reply.status(resolved.status).send(resolved.body);
+    }
+
+    try {
+      const form = new FormData();
+      const arrayBuffer = buffer.buffer.slice(
+        buffer.byteOffset,
+        buffer.byteOffset + buffer.byteLength
+      ) as ArrayBuffer;
+      const blob = new Blob([arrayBuffer], { type: filePart.mimetype || 'application/octet-stream' });
+      form.append('file', blob, filePart.filename || 'audio.wav');
+      form.append('model', ASR_UPSTREAM_MODELS[model] || ASR_UPSTREAM_MODEL);
+
+      for (const [name, value] of Object.entries(fields)) {
+        if (name === 'model' || name === 'file') continue;
+        if (value.trim()) form.append(name, value.trim());
       }
 
       const response = await fetch(upstreamUrl(resolved.config.baseUrl, UPSTREAM_ASR_PATH), {
         method: 'POST',
         headers: authHeaders(resolved.config.apiKey),
-        body: form as any
+        body: form as any,
+        dispatcher: ASR_DISPATCHER
       });
 
-      return sendUpstreamText(reply, response);
+      const contentType = response.headers.get('content-type') || '';
+      const shouldStream = streamRequested || contentType.includes('text/event-stream');
+
+      if (!response.ok || !shouldStream) {
+        return sendUpstreamText(reply, response);
+      }
+      if (!response.body) {
+        return proxyError(reply, 502, 'ASR upstream returned empty stream');
+      }
+
+      reply.hijack();
+      reply.raw.writeHead(response.status, {
+        'content-type': contentType || 'text/event-stream; charset=utf-8',
+        'cache-control': response.headers.get('cache-control') || 'no-cache',
+        'x-accel-buffering': response.headers.get('x-accel-buffering') || 'no',
+        connection: 'keep-alive'
+      });
+
+      const stream = Readable.fromWeb(response.body as any);
+      stream.pipe(reply.raw);
+      stream.on('error', () => {
+        try { reply.raw.destroy(); } catch { /* ignore */ }
+      });
+      reply.raw.on('close', () => {
+        stream.destroy();
+        try { response.body?.cancel(); } catch { /* ignore */ }
+      });
+      return;
     } catch (err: any) {
       req.log.error(err, 'ASR proxy failed');
-      return proxyError(reply, 502, 'ASR upstream request failed');
+      if (!reply.raw.headersSent) {
+        return proxyError(reply, 502, 'ASR upstream request failed');
+      }
+      reply.raw.destroy();
     }
   });
 
